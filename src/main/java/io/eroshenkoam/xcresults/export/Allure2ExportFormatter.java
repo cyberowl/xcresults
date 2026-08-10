@@ -64,6 +64,12 @@ public class Allure2ExportFormatter implements ExportFormatter {
 
     private static final String SUITE = "suite";
 
+    private static final Pattern ALLURE_ID = Pattern.compile("allure\\.id:(?<id>.*)");
+    private static final Pattern ALLURE_NAME = Pattern.compile("allure\\.name:(?<name>.*)");
+    private static final Pattern ALLURE_DESCRIPTION = Pattern.compile("allure\\.description:(?<description>.*)");
+    private static final Pattern ALLURE_LABEL = Pattern.compile("allure\\.label\\.(?<name>.*?):(?<value>.*)");
+    private static final Pattern ALLURE_LINK = Pattern.compile("allure\\.link\\.(?<name>.*?)(|\\[(?<type>.*)]):(?<url>.*)");
+
     @Override
     public TestResult format(final ExportMeta meta, final JsonNode node) {
         final TestResult result = new TestResult()
@@ -139,8 +145,7 @@ public class Allure2ExportFormatter implements ExportFormatter {
         }
         final String activityTitle = title.get();
 
-        final Matcher idMatcher = Pattern.compile("allure\\.id:(?<id>.*)")
-                .matcher(activityTitle);
+        final Matcher idMatcher = ALLURE_ID.matcher(activityTitle);
         if (idMatcher.matches()) {
             final Label label = new Label()
                     .setName("AS_ID")
@@ -148,20 +153,17 @@ public class Allure2ExportFormatter implements ExportFormatter {
             context.getResult().getLabels().add(label);
             return;
         }
-        final Matcher nameMatcher = Pattern.compile("allure\\.name:(?<name>.*)")
-                .matcher(activityTitle);
+        final Matcher nameMatcher = ALLURE_NAME.matcher(activityTitle);
         if (nameMatcher.matches()) {
             context.getResult().setName(nameMatcher.group("name"));
             return;
         }
-        final Matcher descriptionMatcher = Pattern.compile("allure\\.description:(?<description>.*)")
-                .matcher(activityTitle);
+        final Matcher descriptionMatcher = ALLURE_DESCRIPTION.matcher(activityTitle);
         if (descriptionMatcher.matches()) {
             context.getResult().setDescription(descriptionMatcher.group("description"));
             return;
         }
-        final Matcher labelMatcher = Pattern.compile("allure\\.label\\.(?<name>.*?):(?<value>.*)")
-                .matcher(activityTitle);
+        final Matcher labelMatcher = ALLURE_LABEL.matcher(activityTitle);
         if (labelMatcher.matches()) {
             final Label label = new Label()
                     .setName(labelMatcher.group("name"))
@@ -169,8 +171,7 @@ public class Allure2ExportFormatter implements ExportFormatter {
             context.getResult().getLabels().add(label);
             return;
         }
-        final Matcher linkMatcher = Pattern.compile("allure\\.link\\.(?<name>.*?)(|\\[(?<type>.*)]):(?<url>.*)")
-                .matcher(activityTitle);
+        final Matcher linkMatcher = ALLURE_LINK.matcher(activityTitle);
         if (linkMatcher.matches()) {
             final Link link = new Link()
                     .setName(linkMatcher.group("name"))
