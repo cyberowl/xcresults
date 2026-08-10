@@ -35,6 +35,7 @@ public class Allure2ExportFormatter implements ExportFormatter {
 
     private static final String FAILURE_IS_TOP_LEVEL = "isTopLevelFailure";
 
+    private static final String SKIP_NOTICE_SUMMARY = "skipNoticeSummary";
     private static final String ACTIVITY_SUMMARIES = "activitySummaries";
     private static final String ACTIVITY_TYPE = "activityType";
     private static final String ACTIVITY_UUID = "uuid";
@@ -81,6 +82,15 @@ public class Allure2ExportFormatter implements ExportFormatter {
         }
         if (node.has(STATUS)) {
             result.setStatus(getTestStatus(node));
+        }
+        if (node.has(SKIP_NOTICE_SUMMARY)) {
+            result.setStatus(Status.SKIPPED);
+            final JsonNode skipNotice = node.get(SKIP_NOTICE_SUMMARY);
+            if (skipNotice.has(FAILURE_MESSAGE)) {
+                result.setStatusDetails(new StatusDetails().setMessage(skipNotice.get(FAILURE_MESSAGE)
+                        .get(VALUE)
+                        .asText()));
+            }
         }
         final StepContext context = new StepContext()
                 .setResult(result)
@@ -196,28 +206,6 @@ public class Allure2ExportFormatter implements ExportFormatter {
                 .setAttachments(new ArrayList<>());
         attachments.ifPresent(step.getAttachments()::addAll);
 
-        final boolean hasAssertionMessage = activityTitle.startsWith("Assertion Failure")
-                || activityTitle.contains("Test skipped");
-        final boolean hasAssertionType = activity.has(ACTIVITY_TYPE)
-                && activity.get(ACTIVITY_TYPE).get(VALUE).asText().contains("testAssertionFailure");
-        if (hasAssertionMessage || hasAssertionType) {
-            final Status status = context.getResult().getStatus();
-            final StatusDetails details = new StatusDetails();
-
-            if (isNull(status)) {
-                details.setMessage("xcresults export tool issue: unsupported `testStatus` value found inside xcresult report");
-            } else {
-                details.setMessage(activityTitle);
-            }
-
-            step.setStatusDetails(details);
-            step.setStatus(status);
-
-            context.getPath().forEach(item -> {
-                item.setStatusDetails(details);
-                item.setStatus(status);
-            });
-        }
         if (activity.has(ACTIVITY_START) && activity.has(ACTIVITY_FINISH)) {
             step.setStart(parseDate(activity.get(ACTIVITY_START).get(VALUE).asText()));
             step.setStop(parseDate(activity.get(ACTIVITY_FINISH).get(VALUE).asText()));
