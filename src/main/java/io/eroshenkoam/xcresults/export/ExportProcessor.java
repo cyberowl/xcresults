@@ -12,12 +12,23 @@ import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.FilenameUtils;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 import static io.eroshenkoam.xcresults.util.FormatUtil.getResultFilePath;
 import static io.eroshenkoam.xcresults.util.FormatUtil.parseDate;
@@ -68,10 +79,10 @@ public class ExportProcessor {
     private final Path inputPath;
     private final Path outputPath;
 
-    private String brokenConfigPath;
+    private final String brokenConfigPath;
 
-    private Boolean addCarouselAttachment;
-    private String carouselTemplatePath;
+    private final Boolean addCarouselAttachment;
+    private final String carouselTemplatePath;
 
 
     public ExportProcessor(final Path inputPath,
@@ -103,55 +114,77 @@ public class ExportProcessor {
             }
         }
 
-        final Map<JsonNode, ExportMeta> testSummaries = new HashMap<>();
-        testRefIds.forEach((testRefId, meta) -> {
-            final JsonNode testRef = getReference(testRefId);
-            for (JsonNode summary : testRef.get(SUMMARIES).get(VALUES)) {
-                for (JsonNode testableSummary : summary.get(TESTABLE_SUMMARIES).get(VALUES)) {
-                    final ExportMeta testMeta = getTestMeta(meta, testableSummary);
-                    if (testableSummary.has(TESTS) && testableSummary.get(TESTS).has(VALUES)) {
-                        for (JsonNode test : testableSummary.get(TESTS).get(VALUES)) {
-                            getTestSummaries(test).forEach(testSummary -> {
-                                testSummaries.put(testSummary, testMeta);
-                            });
+        final ExecutorService executor = Executors.newFixedThreadPool(
+                Math.max(2, Runtime.getRuntime().availableProcessors()));
+        final Map<String, JsonNode> references = new ConcurrentHashMap<>();
+        final List<SummaryItem> summaryItems = Collections.synchronizedList(new ArrayList<>());
+        final Map<JsonNode, ExportMeta> testSummaries = new ConcurrentHashMap<>();
+        final Map<String, String> attachmentsRefs = new ConcurrentHashMap<>();
+        final Map<Path, TestResult> testResults = new ConcurrentHashMap<>();
+        try {
+            runInParallel(testRefIds.keySet(), testRefId ->
+                    references.put(testRefId, getReference(testRefId)), executor);
+
+            runInParallel(testRefIds.entrySet(), entry -> {
+                final JsonNode testRef = references.get(entry.getKey());
+                for (JsonNode summary : testRef.get(SUMMARIES).get(VALUES)) {
+                    for (JsonNode testableSummary : summary.get(TESTABLE_SUMMARIES).get(VALUES)) {
+                        final ExportMeta testMeta = getTestMeta(entry.getValue(), testableSummary);
+                        if (testableSummary.has(TESTS) && testableSummary.get(TESTS).has(VALUES)) {
+                            for (JsonNode test : testableSummary.get(TESTS).get(VALUES)) {
+                                collectSummaryItems(test, testMeta, summaryItems);
+                            }
+                        } else {
+                            System.out.printf("No tests found for '%s'%n", testableSummary.get("name").get(VALUE));
                         }
-                    } else {
-                        System.out.printf("No tests found for '%s'%n", testableSummary.get("name").get(VALUE));
                     }
                 }
-            }
-        });
+            }, executor);
 
-        System.out.printf("Export information about %s test summaries...%n", testSummaries.size());
-        final Map<String, String> attachmentsRefs = new HashMap<>();
-        final Map<Path, TestResult> testResults = new HashMap<>();
-        for (final Map.Entry<JsonNode, ExportMeta> entry : testSummaries.entrySet()) {
-            final JsonNode testSummary = entry.getKey();
-            final ExportMeta meta = entry.getValue();
+            final Set<String> summaryRefIds = summaryItems.stream()
+                    .map(item -> item.refId)
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.toSet());
+            runInParallel(summaryRefIds, summaryRefId ->
+                    references.put(summaryRefId, getReference(summaryRefId)), executor);
 
-            final TestResult testResult = new Allure2ExportFormatter().format(meta, testSummary);
-            final Path testSummaryPath = getResultFilePath(outputPath);
-            mapper.writeValue(testSummaryPath.toFile(), testResult);
+            runInParallel(summaryItems, item -> {
+                final JsonNode testSummary = Objects.nonNull(item.refId)
+                        ? references.get(item.refId)
+                        : item.inlineSummary;
+                testSummaries.put(testSummary, item.meta);
+            }, executor);
 
-            final Map<String, List<String>> attachmentSources = getAttachmentSources(testResult);
-            final List<JsonNode> summaries = new ArrayList<>();
-            summaries.addAll(getAttributeValues(testSummary, ACTIVITY_SUMMARIES));
-            summaries.addAll(getAttributeValues(testSummary, FAILURE_SUMMARIES));
-            summaries.forEach(summary -> {
-                getAttachmentRefs(summary).forEach((name, ref) -> {
-                    if (attachmentSources.containsKey(name)) {
-                        final List<String> sources = attachmentSources.get(name);
-                        sources.forEach(source -> attachmentsRefs.put(source, ref));
-                    }
+            System.out.printf("Export information about %s test summaries...%n", testSummaries.size());
+            runInParallel(testSummaries.entrySet(), entry -> {
+                final JsonNode testSummary = entry.getKey();
+                final ExportMeta meta = entry.getValue();
+
+                final TestResult testResult = new Allure2ExportFormatter().format(meta, testSummary);
+                final Path testSummaryPath = getResultFilePath(outputPath);
+                try {
+                    mapper.writeValue(testSummaryPath.toFile(), testResult);
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+
+                final Map<String, List<String>> attachmentSources = getAttachmentSources(testResult);
+                final List<JsonNode> summaries = new ArrayList<>();
+                summaries.addAll(getAttributeValues(testSummary, ACTIVITY_SUMMARIES));
+                summaries.addAll(getAttributeValues(testSummary, FAILURE_SUMMARIES));
+                summaries.forEach(summary -> {
+                    getAttachmentRefs(summary).forEach((name, ref) -> {
+                        if (attachmentSources.containsKey(name)) {
+                            final List<String> sources = attachmentSources.get(name);
+                            sources.forEach(source -> attachmentsRefs.put(source, ref));
+                        }
+                    });
                 });
-            });
-            testResults.put(testSummaryPath, testResult);
-        }
-        System.out.printf("Export information about %s attachments...%n", attachmentsRefs.size());
-        for (Map.Entry<String, String> attachment : attachmentsRefs.entrySet()) {
-            final String attachmentRef = attachment.getValue();
-            final Path attachmentPath = outputPath.resolve(attachment.getKey());
-            exportReference(attachmentRef, attachmentPath);
+                testResults.put(testSummaryPath, testResult);
+            }, executor);
+            exportAttachments(attachmentsRefs, executor);
+        } finally {
+            executor.shutdown();
         }
 
         final List<ExportPostProcessor> postProcessors = new ArrayList<>();
@@ -208,23 +241,37 @@ public class ExportProcessor {
         return refs;
     }
 
-    private List<JsonNode> getTestSummaries(final JsonNode test) {
-        final List<JsonNode> summaries = new ArrayList<>();
+    private void collectSummaryItems(final JsonNode test,
+                                     final ExportMeta meta,
+                                     final List<SummaryItem> items) {
         if (test.has(SUMMARY_REF)) {
             final String ref = test.get(SUMMARY_REF).get(ID).get(VALUE).asText();
-            summaries.add(getReference(ref));
+            items.add(new SummaryItem(ref, null, meta));
         } else {
             if (test.has(TYPE) && test.get(TYPE).get(NAME).textValue().equals("ActionTestMetadata")) {
-                summaries.add(test);
+                items.add(new SummaryItem(null, test, meta));
             }
         }
 
         if (test.has(SUBTESTS)) {
             for (final JsonNode subTest : test.get(SUBTESTS).get(VALUES)) {
-                summaries.addAll(getTestSummaries(subTest));
+                collectSummaryItems(subTest, meta, items);
             }
         }
-        return summaries;
+    }
+
+    private static class SummaryItem {
+
+        private final String refId;
+        private final JsonNode inlineSummary;
+        private final ExportMeta meta;
+
+        private SummaryItem(final String refId, final JsonNode inlineSummary, final ExportMeta meta) {
+            this.refId = refId;
+            this.inlineSummary = inlineSummary;
+            this.meta = meta;
+        }
+
     }
 
     private List<JsonNode> getAttributeValues(final JsonNode node, final String attributeName) {
@@ -235,7 +282,9 @@ public class ExportProcessor {
         return result;
     }
 
-    private static boolean isLegacyMode() {
+    private static final boolean LEGACY_MODE = detectLegacyMode();
+
+    private static boolean detectLegacyMode() {
         try {
             final String output = readProcessOutputAsString(new ProcessBuilder("xcodebuild", "-version"));
             final String versionLine = output.split("\n")[0];
@@ -251,7 +300,7 @@ public class ExportProcessor {
         builder.command(command);
         builder.command().add(0, "xcrun");
         builder.command().add(1, "xcresulttool");
-        if (isLegacyMode()) {
+        if (LEGACY_MODE) {
             builder.command().add("--legacy");
         }
         return builder;
@@ -276,7 +325,46 @@ public class ExportProcessor {
         return readProcessOutputAsJson(builder, mapper);
     }
 
-    private void exportReference(final String id, final Path output) {
+    private void exportAttachments(final Map<String, String> attachmentsRefs, final ExecutorService executor) {
+        final Map<String, List<String>> sourcesByRef = attachmentsRefs.entrySet()
+                .stream()
+                .collect(Collectors.groupingBy(Map.Entry::getValue,
+                        Collectors.mapping(Map.Entry::getKey, Collectors.toList())));
+        System.out.printf("Export information about %s attachments (%s unique)...%n",
+                attachmentsRefs.size(), sourcesByRef.size());
+        runInParallel(sourcesByRef.entrySet(), entry -> exportAttachment(entry.getKey(), entry.getValue()), executor);
+    }
+
+    private void exportAttachment(final String ref, final List<String> sources) {
+        Path tempPath = null;
+        try {
+            tempPath = Files.createTempFile("xcresults-", ".payload");
+            exportPayload(ref, tempPath);
+            for (final String source : sources) {
+                copyPayloadToSource(tempPath, source);
+            }
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        } finally {
+            if (!Objects.isNull(tempPath)) {
+                tempPath.toFile().delete();
+            }
+        }
+    }
+
+    private void copyPayloadToSource(final Path tempPath, final String source) throws IOException {
+        final Path target = outputPath.resolve(source);
+        Files.copy(tempPath, target, StandardCopyOption.REPLACE_EXISTING);
+        convertHeicIfNeeded(target);
+    }
+
+    private void convertHeicIfNeeded(final Path target) {
+        if (FILE_EXTENSION_HEIC.equals(FilenameUtils.getExtension(target.toString()))) {
+            convertHeicToJpeg(target);
+        }
+    }
+
+    private void exportPayload(final String id, final Path output) {
         final ProcessBuilder exportBuilder = processBuilderForXCResultToolCommand(
                 "export",
                 "--type", "file",
@@ -286,30 +374,36 @@ public class ExportProcessor {
         );
 
         readProcessOutput(exportBuilder, (i) -> null);
+    }
 
-        if (FILE_EXTENSION_HEIC.equals(FilenameUtils.getExtension(output.toString()))) {
-            convertHeicToJpeg(output);
-        }
+    private static Process getProcess(Path heicPath, Path parent, String jpegFilename) throws IOException {
+        final Path jpegFilePath = parent.resolve(jpegFilename);
+        final ProcessBuilder convertBuilder = new ProcessBuilder();
+        convertBuilder.command(
+                "sips", "-s",
+                "format", "jpeg",
+                heicPath.toAbsolutePath().toString(),
+                "--out", jpegFilePath.toAbsolutePath().toString()
+        );
+        return convertBuilder.start();
     }
 
     private void convertHeicToJpeg(Path heicPath) {
         try {
             final Path parent = heicPath.getParent();
             final String jpegFilename = String.format("%s.%s", FilenameUtils.getBaseName(heicPath.toString()), "jpeg");
-            final Path jpegFilePath = parent.resolve(jpegFilename);
-            final ProcessBuilder convertBuilder = new ProcessBuilder();
-            convertBuilder.command(
-                    "sips", "-s",
-                    "format", "jpeg",
-                    heicPath.toAbsolutePath().toString(),
-                    "--out", jpegFilePath.toAbsolutePath().toString()
-            );
-            Process process = convertBuilder.start();
+            Process process = getProcess(heicPath, parent, jpegFilename);
             process.waitFor();
             FileUtils.deleteQuietly(heicPath.toFile());
         } catch (IOException | InterruptedException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    private static <T> void runInParallel(final Collection<T> items,
+                                          final Consumer<T> action,
+                                          final ExecutorService executor) {
+        CompletableFuture.allOf(items.stream().map(item -> CompletableFuture.runAsync(() -> action.accept(item), executor)).toArray(CompletableFuture[]::new)).join();
     }
 
 }

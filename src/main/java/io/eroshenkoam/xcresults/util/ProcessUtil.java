@@ -28,13 +28,14 @@ public final class ProcessUtil {
         try {
             final Process process = builder.start();
             try (InputStream input = process.getInputStream()) {
-                if (Objects.nonNull(input)) {
-                    return reader.apply(input);
-                } else {
-                    return null;
-                }
+                final T result = Objects.nonNull(input) ? reader.apply(input) : null;
+                process.waitFor();
+                return result;
             }
         } catch (IOException e) {
+            throw new RuntimeException(e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
             throw new RuntimeException(e);
         }
     }
