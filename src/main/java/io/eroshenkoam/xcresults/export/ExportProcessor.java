@@ -118,7 +118,7 @@ public class ExportProcessor {
                 Math.max(2, Runtime.getRuntime().availableProcessors()));
         final Map<String, JsonNode> references = new ConcurrentHashMap<>();
         final List<SummaryItem> summaryItems = Collections.synchronizedList(new ArrayList<>());
-        final Map<JsonNode, ExportMeta> testSummaries = new ConcurrentHashMap<>();
+        final List<Map.Entry<JsonNode, ExportMeta>> testSummaries = Collections.synchronizedList(new ArrayList<>());
         final Map<String, String> attachmentsRefs = new ConcurrentHashMap<>();
         final Map<Path, TestResult> testResults = new ConcurrentHashMap<>();
         try {
@@ -152,11 +152,11 @@ public class ExportProcessor {
                 final JsonNode testSummary = Objects.nonNull(item.refId)
                         ? references.get(item.refId)
                         : item.inlineSummary;
-                testSummaries.put(testSummary, item.meta);
+                testSummaries.add(Map.entry(testSummary, item.meta));
             }, executor);
 
             System.out.printf("Export information about %s test summaries...%n", testSummaries.size());
-            runInParallel(testSummaries.entrySet(), entry -> {
+            runInParallel(testSummaries, entry -> {
                 final JsonNode testSummary = entry.getKey();
                 final ExportMeta meta = entry.getValue();
 
