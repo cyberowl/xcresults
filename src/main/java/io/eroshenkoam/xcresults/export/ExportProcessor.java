@@ -50,9 +50,20 @@ public class ExportProcessor {
     private static final String TESTS = "tests";
     private static final String SUBTESTS = "subtests";
 
-    private static final String FAILURE_SUMMARIES = "failureSummaries";
     private static final String ACTIVITY_SUMMARIES = "activitySummaries";
+    private static final String DEVICE = "device";
+    private static final String FAILURE_SUMMARIES = "failureSummaries";
+    private static final String HOST = "host";
+    private static final String LOCAL_COMPUTER_RECORD = "localComputerRecord";
+    private static final String MODEL_NAME = "modelName";
+    private static final String OPERATING_SYSTEM_VERSION = "operatingSystemVersion";
+    private static final String OS = "os";
+    private static final String PLATFORM = "platform";
+    private static final String PLATFORM_RECORD = "platformRecord";
+    private static final String RECORD_NAME = "name";
     private static final String SUBACTIVITIES = "subactivities";
+    private static final String TARGET_DEVICE_RECORD = "targetDeviceRecord";
+    private static final String USER_DESCRIPTION = "userDescription";
 
     private static final String ATTACHMENTS = "attachments";
 
@@ -61,6 +72,7 @@ public class ExportProcessor {
 
     private static final String SUMMARY_REF = "summaryRef";
 
+    private static final String TARGET = "testTarget";
     private static final String SUITE = "suite";
 
     private static final String ID = "id";
@@ -106,6 +118,9 @@ public class ExportProcessor {
                 final ExportMeta meta = new ExportMeta();
                 if (action.has(RUN_DESTINATION)) {
                     meta.label(RUN_DESTINATION, action.get(RUN_DESTINATION).get(DISPLAY_NAME).get(VALUE).asText());
+                    final JsonNode runDestination = action.get(RUN_DESTINATION);
+                    meta.label(RUN_DESTINATION, runDestination.get(DISPLAY_NAME).get(VALUE).asText());
+                    fillRunDestinationLabels(meta, runDestination);
                 }
                 if (action.has(START_TIME)) {
                     meta.setStart(parseDate(action.get(START_TIME).get(VALUE).textValue()));
@@ -199,11 +214,31 @@ public class ExportProcessor {
         );
     }
 
+    private void fillRunDestinationLabels(final ExportMeta meta, final JsonNode runDestination) {
+        final JsonNode localComputer = runDestination.get(LOCAL_COMPUTER_RECORD);
+        if (Objects.nonNull(localComputer) && localComputer.has(RECORD_NAME)) {
+            meta.label(HOST, localComputer.get(RECORD_NAME).get(VALUE).asText());
+        }
+        final JsonNode targetDevice = runDestination.get(TARGET_DEVICE_RECORD);
+        if (Objects.nonNull(targetDevice)) {
+            if (targetDevice.has(MODEL_NAME)) {
+                meta.label(DEVICE, targetDevice.get(MODEL_NAME).get(VALUE).asText());
+            }
+            if (targetDevice.has(OPERATING_SYSTEM_VERSION)) {
+                meta.label(OS, targetDevice.get(OPERATING_SYSTEM_VERSION).get(VALUE).asText());
+            }
+            final JsonNode platform = targetDevice.get(PLATFORM_RECORD);
+            if (Objects.nonNull(platform) && platform.has(USER_DESCRIPTION)) {
+                meta.label(PLATFORM, platform.get(USER_DESCRIPTION).get(VALUE).asText());
+            }
+        }
+    }
+
     private ExportMeta getTestMeta(final ExportMeta meta, final JsonNode testableSummary) {
         final ExportMeta exportMeta = new ExportMeta();
         exportMeta.setStart(meta.getStart());
         meta.getLabels().forEach(exportMeta::label);
-        exportMeta.label(SUITE, testableSummary.get(TARGET_NAME).get(VALUE).asText());
+        exportMeta.label(TARGET, testableSummary.get(TARGET_NAME).get(VALUE).asText());
         return exportMeta;
     }
 

@@ -1,23 +1,11 @@
 package io.eroshenkoam.xcresults.export;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import io.qameta.allure.model.Attachment;
-import io.qameta.allure.model.ExecutableItem;
-import io.qameta.allure.model.Label;
-import io.qameta.allure.model.Link;
-import io.qameta.allure.model.Status;
-import io.qameta.allure.model.StatusDetails;
-import io.qameta.allure.model.StepResult;
-import io.qameta.allure.model.TestResult;
+import io.eroshenkoam.xcresults.util.HashUtil;
+import io.qameta.allure.model.*;
 import org.apache.commons.io.FilenameUtils;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Optional;
+import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -63,7 +51,17 @@ public class Allure2ExportFormatter implements ExportFormatter {
     private static final String VALUE = "_value";
     private static final String VALUES = "_values";
 
+    private static final String TARGET = "testTarget";
+    private static final String ARGUMENTS = "arguments";
+    private static final String DESCRIPTION = "description";
+    private static final String LABEL = "label";
+    private static final String PARAMETER = "parameter";
+    private static final String PARAMETER_VALUE = "value";
+    private static final String PACKAGE = "package";
+    private static final String SUB_SUITE = "subSuite";
     private static final String SUITE = "suite";
+    private static final String TEST_CLASS = "testClass";
+    private static final String TEST_METHOD = "testMethod";
 
     private static final Pattern ALLURE_ID = Pattern.compile("allure\\.id:(?<id>.*)");
     private static final Pattern ALLURE_NAME = Pattern.compile("allure\\.name:(?<name>.*)");
@@ -83,8 +81,11 @@ public class Allure2ExportFormatter implements ExportFormatter {
         }
         if (node.has(IDENTIFIER)) {
             final String identifier = node.get(IDENTIFIER).get(VALUE).asText();
-            result.setHistoryId(getHistoryId(meta, identifier));
-            result.setFullName(identifier);
+            final String historyId = getHistoryId(meta, identifier);
+            result.setFullName(historyId);
+            fillParameters(node, result);
+            result.setTestCaseId(HashUtil.md5(historyId));
+            result.setHistoryId(HashUtil.md5(getHistoryIdWithParameters(historyId, result)));
         }
         if (node.has(STATUS)) {
             result.setStatus(getTestStatus(node));
@@ -129,6 +130,7 @@ public class Allure2ExportFormatter implements ExportFormatter {
         meta.getLabels().forEach((name, value) -> {
             result.getLabels().add(new Label().setName(name).setValue(value));
         });
+        fillTestIdentityLabels(node, meta, result);
         if (Objects.isNull(result.getStart())) {
             result.setStart(meta.getStart());
         }
@@ -346,6 +348,61 @@ public class Allure2ExportFormatter implements ExportFormatter {
         return Optional.empty();
     }
 
+    private void fillTestIdentityLabels(final JsonNode node, final ExportMeta meta, final TestResult result) {
+        final Set<String> labelNames = new HashSet<>();
+        result.getLabels().forEach(label -> labelNames.add(label.getName()));
+        if (node.has(IDENTIFIER)) {
+            final String identifier = node.get(IDENTIFIER).get(VALUE).asText();
+            final String[] segments = identifier.split("/");
+            if (segments.length >= 2) {
+                final String suite = segments[0];
+                final String testClass = segments[segments.length - 2];
+                final String testMethod = stripTestArguments(segments[segments.length - 1]);
+                addLabel(result, labelNames, SUITE, suite);
+                addLabel(result, labelNames, TEST_CLASS, testClass);
+                addLabel(result, labelNames, TEST_METHOD, testMethod);
+                if (segments.length >= 4) {
+                    addLabel(result, labelNames, SUB_SUITE, segments[1]);
+                }
+                final String target = meta.getLabels().get(TARGET);
+                addLabel(result, labelNames, PACKAGE, isNull(target) ? suite : target);
+            }
+        }
+    }
+
+    private void addLabel(final TestResult result, final Set<String> labelNames, final String name, final String value) {
+        if (labelNames.add(name)) {
+            result.getLabels().add(new Label().setName(name).setValue(value));
+        }
+    }
+
+    private String stripTestArguments(final String method) {
+        final int paren = method.indexOf('(');
+        if (paren < 0 || method.indexOf(')', paren) < 0) {
+            return method;
+        }
+        return method.substring(0, paren);
+    }
+
+    private void fillParameters(final JsonNode node, final TestResult result) {
+        if (node.has(ARGUMENTS)) {
+            node.get(ARGUMENTS).get(VALUES).forEach(argument -> {
+                final String name = argument.get(PARAMETER).get(LABEL).get(VALUE).asText();
+                final String value = argument.get(PARAMETER_VALUE).get(DESCRIPTION).get(VALUE).asText();
+                result.getParameters().add(new Parameter().setName(name).setValue(value));
+            });
+        }
+    }
+
+    private String getHistoryIdWithParameters(final String historyId, final TestResult result) {
+        if (result.getParameters().isEmpty()) {
+            return historyId;
+        }
+        final List<String> params = new ArrayList<>();
+        result.getParameters().forEach(p -> params.add(p.getName() + "=" + p.getValue()));
+        return String.format("%s[%s]", historyId, String.join(",", params));
+    }
+
     private class StepContext {
 
         private TestResult result;
@@ -402,7 +459,7 @@ public class Allure2ExportFormatter implements ExportFormatter {
     }
 
     private String getHistoryId(final ExportMeta meta, final String identifier) {
-        final String suite = meta.getLabels().getOrDefault(SUITE, "Default");
+        final String suite = meta.getLabels().getOrDefault(TARGET, "Default");
         return String.format("%s/%s", suite, identifier);
     }
 
