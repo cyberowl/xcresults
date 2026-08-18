@@ -51,15 +51,18 @@ public class Allure2ExportFormatter implements ExportFormatter {
     private static final String VALUE = "_value";
     private static final String VALUES = "_values";
 
-    private static final String TARGET = "testTarget";
     private static final String ARGUMENTS = "arguments";
     private static final String DESCRIPTION = "description";
+    private static final String DEVICE = "device";
     private static final String LABEL = "label";
+    private static final String OS = "os";
+    private static final String PACKAGE = "package";
     private static final String PARAMETER = "parameter";
     private static final String PARAMETER_VALUE = "value";
-    private static final String PACKAGE = "package";
+    private static final String PLATFORM = "platform";
     private static final String SUB_SUITE = "subSuite";
     private static final String SUITE = "suite";
+    private static final String TARGET = "testTarget";
     private static final String TEST_CLASS = "testClass";
     private static final String TEST_METHOD = "testMethod";
 
@@ -85,7 +88,7 @@ public class Allure2ExportFormatter implements ExportFormatter {
             result.setFullName(historyId);
             fillParameters(node, result);
             result.setTestCaseId(HashUtil.md5(historyId));
-            result.setHistoryId(HashUtil.md5(getHistoryIdWithParameters(historyId, result)));
+            result.setHistoryId(HashUtil.md5(getHistoryIdWithParameters(getHistoryIdWithEnvironment(historyId, meta), result)));
         }
         if (node.has(STATUS)) {
             result.setStatus(getTestStatus(node));
@@ -346,6 +349,21 @@ public class Allure2ExportFormatter implements ExportFormatter {
             return Optional.of(String.format("%s:%s", filePath, lineNumber));
         }
         return Optional.empty();
+    }
+
+    private String getHistoryIdWithEnvironment(final String historyId, final ExportMeta meta) {
+        final List<String> env = new ArrayList<>();
+        final Map<String, String> labels = meta.getLabels();
+        if (labels.containsKey(OS)) {
+            env.add(labels.get(OS));
+        }
+        if (labels.containsKey(DEVICE)) {
+            env.add(labels.get(DEVICE));
+        }
+        if (labels.containsKey(PLATFORM)) {
+            env.add(labels.get(PLATFORM));
+        }
+        return env.isEmpty() ? historyId : String.format("%s[%s]", historyId, String.join(", ", env));
     }
 
     private void fillTestIdentityLabels(final JsonNode node, final ExportMeta meta, final TestResult result) {
